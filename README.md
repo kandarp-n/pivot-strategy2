@@ -105,6 +105,31 @@ python live_trader.py --once
 python live_trader.py
 ```
 
+### Keeping the strategies fresh
+
+The bot **auto-loads its top-10 (stock, strategy) list from
+`results_intraday_dhan.csv`** at every startup. To refresh after a regime
+shift, just regenerate the results CSV:
+
+```powershell
+# 1. Re-run the backtest on the most recent ~3 months of data
+python backtest_intraday_dhan.py
+
+# 2. Verify the new top-10 prints correctly during pre-market
+python live_trader.py --once
+
+# 3. Run live (or dry-run)
+python live_trader.py
+```
+
+If `results_intraday_dhan.csv` is missing or has fewer than 10 eligible
+combos, the bot falls back to a hardcoded snapshot of the top-10 from
+2026-06-13 — so a missing/corrupt CSV won't take you offline.
+
+> The auto-loader only considers **bounce / fade** strategies (the live
+> engine implements limit-style entries). Breakout/breakdown variants are
+> filtered out even if they crack the top 10.
+
 ### Going live — read this first
 
 The script will refuse to send real orders unless **both** of these flags

@@ -16,8 +16,14 @@ LIVE INTRADAY PIVOT TRADER — top-10 (stock, strategy) combos from the backtest
 6. Dhan's max ~5 orders/sec rate-limit applies; we self-throttle.
 
 ================================================================================
-                        TRADE PLANS (locked from backtest)
+                        TRADE PLANS (auto-loaded from backtest)
 ================================================================================
+At startup, the bot reads `results_intraday_dhan.csv` and selects the top-10
+(stock, strategy) combos by backtest `total_ret` (filtered to bounce/fade
+strategies that the live engine supports). If the CSV is missing or has
+fewer than 10 eligible combos, it falls back to the hardcoded snapshot
+below — same set the bot shipped with on 2026-06-13.
+
    #  Stock        Strategy                Side    Entry    Target   Stop
    1  POWERGRID    STD_R1_BOUNCE_SHORT     SHORT   std_R1   std_PP   std_R2
    2  HDFCBANK     FIB_S1_BOUNCE_LONG      LONG    fib_S1   fib_PP   fib_S2
@@ -29,6 +35,11 @@ LIVE INTRADAY PIVOT TRADER — top-10 (stock, strategy) combos from the backtest
    8  KOTAKBANK    STD_S1_BOUNCE_LONG      LONG    std_S1   std_PP   std_S2
    9  NTPC         CAM_S3_SHORT            SHORT   cam_R3   cam_S3   cam_R4
   10  NESTLEIND    FIB_S1_BOUNCE_LONG      LONG    fib_S1   fib_PP   fib_S2
+
+Weekly refresh workflow:
+   1.  python backtest_intraday_dhan.py     # regenerates results_*.csv
+   2.  python live_trader.py --once         # confirm the new top-10 prints
+   3.  python live_trader.py                # run live (or dry-run)
 
 ================================================================================
                                  RUN-TIME FLOW
@@ -117,7 +128,7 @@ class TradePlan:
     exit_reason: Optional[str] = None
 
 
-TOP10: list[TradePlan] = [
+TOP10_HARDCODED: list[TradePlan] = [
     TradePlan(1,  "POWERGRID", "STD_R1_BOUNCE_SHORT", "SHORT", "std_R1", "std_PP", "std_R2"),
     TradePlan(2,  "HDFCBANK",  "FIB_S1_BOUNCE_LONG",  "LONG",  "fib_S1", "fib_PP", "fib_S2"),
     TradePlan(3,  "MARUTI",    "CAM_S3_SHORT",        "SHORT", "cam_R3", "cam_S3", "cam_R4"),
@@ -129,6 +140,69 @@ TOP10: list[TradePlan] = [
     TradePlan(9,  "NTPC",      "CAM_S3_SHORT",        "SHORT", "cam_R3", "cam_S3", "cam_R4"),
     TradePlan(10, "NESTLEIND", "FIB_S1_BOUNCE_LONG",  "LONG",  "fib_S1", "fib_PP", "fib_S2"),
 ]
+
+
+# Strategy name -> (side, entry_lvl_key, target_lvl_key, stop_lvl_key).
+# Used to auto-rebuild TOP10 from a fresh results CSV. Only bounce / fade
+# strategies are listed here because the live engine currently implements
+# limit-style entries; breakout / breakdown variants need a different entry
+# trigger and are skipped during auto-load.
+STRATEGY_MAP: dict[str, tuple[str, str, str, str]] = {
+    "STD_S1_BOUNCE_LONG":  ("LONG",  "std_S1", "std_PP", "std_S2"),
+    "STD_R1_BOUNCE_SHORT": ("SHORT", "std_R1", "std_PP", "std_R2"),
+    "FIB_S1_BOUNCE_LONG":  ("LONG",  "fib_S1", "fib_PP", "fib_S2"),
+    "FIB_R1_BOUNCE_SHORT": ("SHORT", "fib_R1", "fib_PP", "fib_R2"),
+    "CAM_L3_LONG":         ("LONG",  "cam_S3", "cam_R3", "cam_S4"),
+    "CAM_S3_SHORT":        ("SHORT", "cam_R3", "cam_S3", "cam_R4"),
+}
+
+
+def load_top10(results_csv: str = "results_intraday_dhan.csv",
+               min_trades: int = 10) -> list[TradePlan]:
+    """Auto-load the top-10 trade plans from the latest backtest results.
+
+    Falls back to the hardcoded TOP10_HARDCODED list if the CSV is missing,
+    unparseable, or yields fewer than 10 valid combinations.
+    Only strategies present in STRATEGY_MAP are eligible (bounce / fade
+    families). Breakout / breakdown variants are skipped because the live
+    engine doesn't currently implement their next-bar-on-close trigger."""
+    if not os.path.exists(results_csv):
+        log.warning(f"   {results_csv} not found — using hardcoded TOP10")
+        return [TradePlan(p.rank, p.symbol, p.strategy, p.side,
+                          p.entry_lvl_key, p.target_lvl_key, p.stop_lvl_key)
+                for p in TOP10_HARDCODED]
+    try:
+        df = pd.read_csv(results_csv)
+        df = df[df["trades"] >= min_trades]
+        df = df[df["strategy"].isin(STRATEGY_MAP.keys())]
+        df = df.sort_values("total_ret", ascending=False).head(10).reset_index(drop=True)
+        if len(df) < 10:
+            log.warning(f"   {results_csv} only yielded {len(df)} eligible "
+                        f"combos (need 10) — using hardcoded TOP10")
+            return [TradePlan(p.rank, p.symbol, p.strategy, p.side,
+                              p.entry_lvl_key, p.target_lvl_key, p.stop_lvl_key)
+                    for p in TOP10_HARDCODED]
+    except Exception as e:
+        log.warning(f"   could not read {results_csv}: {e} — using hardcoded TOP10")
+        return [TradePlan(p.rank, p.symbol, p.strategy, p.side,
+                          p.entry_lvl_key, p.target_lvl_key, p.stop_lvl_key)
+                for p in TOP10_HARDCODED]
+
+    plans: list[TradePlan] = []
+    for i, row in df.iterrows():
+        side, ek, tk, sk = STRATEGY_MAP[row["strategy"]]
+        plans.append(TradePlan(i + 1, row["stock"], row["strategy"],
+                               side, ek, tk, sk))
+    log.info(f"   loaded TOP10 from {results_csv} (latest backtest):")
+    for p, r in zip(plans, df.itertuples()):
+        log.info(f"     #{p.rank:>2} {p.symbol:<11} {p.strategy:<22} "
+                 f"backtest_total={r.total_ret*100:+6.2f}%  "
+                 f"win={r.win_rate*100:>4.1f}%  trades={int(r.trades)}")
+    return plans
+
+
+# Active list (auto-loaded at startup unless the CSV is missing/stale).
+TOP10: list[TradePlan] = []  # populated by main() via load_top10()
 
 
 # =============================================================================
@@ -583,6 +657,10 @@ def main():
         sys.exit(2)
 
     sec_map = load_security_map()
+
+    # Auto-load latest top-10 from the backtest results CSV.
+    global TOP10
+    TOP10 = load_top10()
     plans   = build_todays_plans(client, sec_map)
     if not plans:
         log.error("No valid trade plans for today; exiting"); return
