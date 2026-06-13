@@ -358,9 +358,10 @@ class Result:
 
 def backtest_symbol(symbol, intraday, daily):
     if intraday.empty or daily.empty:
-        return []
+        return [], []
     piv = daily_pivots(daily)
     grouped: dict[str, list[dict]] = {}
+    all_day_trades: list[dict] = []
     for d in sorted(intraday["date"].unique()):
         if pd.Timestamp(d) not in piv.index:
             continue
@@ -371,6 +372,9 @@ def backtest_symbol(symbol, intraday, daily):
         if len(bars) < 5:
             continue
         for k, v in run_day_strategies(bars, row).items():
+            for t in v:
+                t = {**t, "stock": symbol, "strategy": k, "date": str(d)}
+                all_day_trades.append(t)
             grouped.setdefault(k, []).extend(v)
     bh = float(intraday["close"].iloc[-1] / intraday["open"].iloc[0] - 1)
     out = []
@@ -381,7 +385,7 @@ def backtest_symbol(symbol, intraday, daily):
         avg  = float(np.mean([t["ret"] for t in trades])) if n else 0.0
         comp = float(np.prod([1 + t["ret"] for t in trades]) - 1) if n else 0.0
         out.append(Result(symbol, k, n, wins, wr, avg, comp, bh))
-    return out
+    return out, all_day_trades
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +409,7 @@ def main():
         print(f"Symbols not in Dhan scrip master: {missing}")
 
     all_results: list[Result] = []
+    all_trades: list[dict] = []
     for i, sym in enumerate(NIFTY50, 1):
         sid = sec_map.get(sym.upper())
         if not sid:
@@ -416,8 +421,9 @@ def main():
         if intra.empty:
             print(f"[{i:2d}/{len(NIFTY50)}] {sym:<12} sid={sid} no intraday data"); continue
         daily = synthesize_daily(intra)
-        results = backtest_symbol(sym, intra, daily)
+        results, trades = backtest_symbol(sym, intra, daily)
         all_results.extend(results)
+        all_trades.extend(trades)
         n_days = intra["date"].nunique(); n_bars = len(intra)
         n_tr   = sum(r.trades for r in results)
         bh     = results[0].bh_ret if results else 0.0
@@ -426,6 +432,12 @@ def main():
 
     df = pd.DataFrame([r.row() for r in all_results])
     df.to_csv("results_intraday_dhan.csv", index=False)
+    if all_trades:
+        td = pd.DataFrame(all_trades)
+        td = td[["date", "stock", "strategy", "entry", "exit", "ret", "outcome"]]
+        td["ret_pct"] = td["ret"] * 100
+        td.to_csv("trades_intraday_dhan.csv", index=False)
+        print(f"  per-trade log -> trades_intraday_dhan.csv ({len(td)} trades)")
 
     print("\n" + "=" * 80)
     print("INTRADAY SUMMARY (Dhan Data API)")
