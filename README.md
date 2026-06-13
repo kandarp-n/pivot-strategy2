@@ -143,13 +143,66 @@ I_UNDERSTAND_THE_RISKS = True     # default False
 Other knobs in the same block:
 
 ```python
-PER_TRADE_NOTIONAL_INR = 15_000   # rupees per position
+PER_TRADE_NOTIONAL_INR = 15_000   # static fallback notional (used if dynamic sizing is off)
 MAX_CONCURRENT_TRADES  = 6        # cap on simultaneous open positions
 PRODUCT_TYPE           = "INTRADAY"   # MIS — exchange auto-square-off
-SQUARE_OFF_TIME        = dtime(15, 15)   # IST
-ENTRY_WINDOW_END       = dtime(14, 30)   # no new entries after
-POLL_INTERVAL_SEC      = 10              # LTP poll cadence
+
+# --- Dynamic margin-aware sizing (opt-in) ---
+USE_DYNAMIC_SIZING       = False  # True -> size from balance x leverage
+LEVERAGE                 = 1.0    # 1.0 = cash only; up to ~5.0 on Nifty 50 MIS
+MAX_CAPITAL_DEPLOYED_PCT = 0.80   # leave 20% buffer below Dhan's hard limit
+MARGIN_PRECHECK          = True   # call /v2/margincalculator before each order
+
+SQUARE_OFF_TIME          = dtime(15, 15)   # IST
+ENTRY_WINDOW_END         = dtime(14, 30)   # no new entries after
+POLL_INTERVAL_SEC        = 10              # LTP poll cadence
 ```
+
+### Position sizing — using your full capital
+
+By default the bot uses a fixed `Rs 15,000` notional per trade — safe but
+deploys only ~30% of a Rs 1.94L account. To put more capital to work, flip
+`USE_DYNAMIC_SIZING = True` and pick a `LEVERAGE`:
+
+```
+per_trade_notional = balance * MAX_CAPITAL_DEPLOYED_PCT * LEVERAGE / MAX_CONCURRENT_TRADES
+```
+
+Indicative numbers on a Rs 1.94L Dhan account, 80% deployed across 6 slots:
+
+| LEVERAGE | Per-trade notional | Total exposure | Effective use of cash |
+|---:|---:|---:|---:|
+| 1.0× (cash only) | Rs 25,950 | Rs 1.55L | 80% |
+| 2.0× | Rs 51,900 | Rs 3.11L | 160% (uses MIS) |
+| 3.0× | Rs 77,851 | Rs 4.67L | 240% |
+| 5.0× (Dhan max for liquid Nifty 50) | Rs 1,29,752 | Rs 7.78L | 400% |
+
+**Dhan typically grants 5× MIS leverage on Nifty 50 names**, confirmed via
+`/v2/margincalculator` for POWERGRID / HDFCBANK / MARUTI / BPCL.
+
+`MARGIN_PRECHECK = True` makes the bot query `/v2/margincalculator` for each
+plan during pre-market, prints the actual margin required, and warns if the
+top-6 combined margin exceeds 95% of your balance.
+
+### ⚠ Leverage health-check
+
+Leverage scales **gains and losses linearly**. The 3-month backtest showed
+a worst single-trade loss of about **−1.1% of notional**:
+
+| LEVERAGE | Notional/trade | Worst-trade loss | Worst-day loss (3 stops on same day) |
+|---:|---:|---:|---:|
+| 1.0× | Rs 25,950 | −Rs 285 | −Rs 855 |
+| 3.0× | Rs 77,851 | −Rs 856 | −Rs 2,570 |
+| 5.0× | Rs 1,29,752 | −Rs 1,427 | −Rs 4,280 |
+
+Recommended ramp:
+
+1. Run **DRY_RUN at 1.0× for 1-2 weeks** — confirm the bot's intended
+   orders match your independent reading of the levels.
+2. Go **live at 1.0× (cash only) for 2-3 weeks** — measure realised P&L vs
+   backtest expectation; gives you a slippage estimate.
+3. Only step up to 2-3× once you have a clean live track record.
+4. Cap at **3-3.5×** unless your win rate sustainably stays above 65%.
 
 ### Daily flow
 

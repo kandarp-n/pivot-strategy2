@@ -75,8 +75,29 @@ from dotenv import load_dotenv
 # =============================================================================
 DRY_RUN                = True             # << set False to actually trade
 I_UNDERSTAND_THE_RISKS = False            # << must also be True to go live
-PER_TRADE_NOTIONAL_INR = 15_000           # rupee value per position
+PER_TRADE_NOTIONAL_INR = 15_000           # static fallback notional/position
 MAX_CONCURRENT_TRADES  = 6                # safety cap
+
+# --- Margin / dynamic sizing ---------------------------------------------
+# Set USE_DYNAMIC_SIZING = True to size each trade from your Dhan balance and
+# Dhan's MIS leverage instead of using the fixed Rs PER_TRADE_NOTIONAL_INR.
+#
+# Effective per-trade notional (when USE_DYNAMIC_SIZING is True) =
+#     available_balance * MAX_CAPITAL_DEPLOYED_PCT * LEVERAGE / MAX_CONCURRENT_TRADES
+#
+# Example (Rs 1.94L balance, 80% deployed, 5x leverage, 6 slots):
+#     1.94L * 0.80 * 5 / 6  ~=  Rs 1.30L per trade
+# That gives roughly Rs 7.8L of total intraday exposure — about 4x cash.
+#
+# WARNING: leverage scales BOTH gains AND losses. A 1% adverse move on a
+# 5x-leveraged position is a 5% loss on your cash. Start at LEVERAGE = 1.0
+# (cash only, full deployment) for the first live week.
+USE_DYNAMIC_SIZING       = False          # keep PER_TRADE_NOTIONAL_INR by default
+LEVERAGE                 = 1.0            # 1.0 = cash only; up to ~5.0 on Nifty 50 MIS
+MAX_CAPITAL_DEPLOYED_PCT = 0.80           # buffer vs Dhan's hard balance limit
+MARGIN_PRECHECK          = True           # call /v2/margincalculator before each order
+# ------------------------------------------------------------------------
+
 PRODUCT_TYPE           = "INTRADAY"        # MIS — force square-off by EOD
 SQUARE_OFF_TIME        = dtime(15, 15)    # IST
 HARD_STOP_TIME         = dtime(15, 25)    # IST — final cleanup
@@ -383,6 +404,22 @@ class DhanClient:
         j = r.json()
         return j[0] if isinstance(j, list) and j else j
 
+    def margin_required(self, security_id: str, txn: str, qty: int,
+                        price: float) -> dict:
+        """Return Dhan's margin breakdown for a hypothetical INTRADAY order.
+        Keys we care about: totalMargin, availableBalance, leverage."""
+        self._throttle()
+        body = {"dhanClientId": self.client, "exchangeSegment": "NSE_EQ",
+                "transactionType": txn, "quantity": int(qty),
+                "productType": PRODUCT_TYPE, "securityId": str(security_id),
+                "price": float(price)}
+        r = requests.post(f"{self.BASE}/margincalculator", headers=self.h,
+                          json=body, timeout=15)
+        if r.status_code != 200:
+            log.warning(f"   margincalculator {r.status_code}: {r.text[:120]}")
+            return {}
+        return r.json()
+
 
 # =============================================================================
 # Pivot computation
@@ -438,7 +475,24 @@ def load_security_map(path: str = "scrip_master.csv") -> dict[str, str]:
 # Pre-market: build today's plans
 # =============================================================================
 def build_todays_plans(client: DhanClient,
-                       sec_map: dict[str, str]) -> list[TradePlan]:
+                       sec_map: dict[str, str],
+                       available_balance: float = 0.0) -> list[TradePlan]:
+    """Compute today's pivots, sizing each plan's quantity based on either
+    PER_TRADE_NOTIONAL_INR (static) or the user's available balance times
+    Dhan MIS leverage (dynamic)."""
+    if USE_DYNAMIC_SIZING and available_balance > 0:
+        per_trade_notional = (available_balance
+                              * MAX_CAPITAL_DEPLOYED_PCT
+                              * LEVERAGE
+                              / MAX_CONCURRENT_TRADES)
+        log.info(f"  dynamic sizing  : per_trade_notional = Rs {per_trade_notional:,.0f} "
+                 f"(balance Rs {available_balance:,.0f} x "
+                 f"{MAX_CAPITAL_DEPLOYED_PCT*100:.0f}% x "
+                 f"{LEVERAGE:.1f}x / {MAX_CONCURRENT_TRADES} slots)")
+    else:
+        per_trade_notional = PER_TRADE_NOTIONAL_INR
+        log.info(f"  static sizing   : per_trade_notional = Rs {per_trade_notional:,.0f}")
+
     out = []
     seen_pivots: dict[str, dict[str, float]] = {}
     for plan in TOP10:
@@ -468,7 +522,6 @@ def build_todays_plans(client: DhanClient,
         plan.entry_price  = round(piv[plan.entry_lvl_key],  2)
         plan.target_price = round(piv[plan.target_lvl_key], 2)
         plan.stop_price   = round(piv[plan.stop_lvl_key],   2)
-        # sanity: long must have target>entry>stop, short must have stop>entry>target
         if plan.side == "LONG" and not (plan.target_price > plan.entry_price > plan.stop_price):
             log.warning(f"#{plan.rank} {plan.symbol}: invalid LONG levels "
                         f"E={plan.entry_price} T={plan.target_price} S={plan.stop_price}; skipping")
@@ -478,18 +531,41 @@ def build_todays_plans(client: DhanClient,
                         f"E={plan.entry_price} T={plan.target_price} S={plan.stop_price}; skipping")
             continue
 
-        plan.qty = max(1, int(PER_TRADE_NOTIONAL_INR // plan.entry_price))
+        plan.qty = max(1, int(per_trade_notional // plan.entry_price))
         out.append(plan)
 
-    log.info("=" * 78)
+    log.info("=" * 100)
     log.info("TODAY'S TRADE PLANS")
     log.info(f"  {'#':>2} {'Stock':<11} {'Strategy':<22} {'Side':<5} "
-             f"{'Entry':>9} {'Target':>9} {'Stop':>9} {'Qty':>4}")
-    for p in out:
+             f"{'Entry':>9} {'Target':>9} {'Stop':>9} {'Qty':>5} "
+             f"{'Notional':>10} {'Margin':>9}")
+    total_margin_top6 = 0.0
+    for i, p in enumerate(out):
+        notional = p.qty * p.entry_price
+        margin_str = "?"
+        margin_val = 0.0
+        if MARGIN_PRECHECK:
+            txn = "BUY" if p.side == "LONG" else "SELL"
+            m = client.margin_required(p.security_id, txn, p.qty, p.entry_price)
+            if m:
+                margin_val = float(m.get("totalMargin", 0))
+                margin_str = f"{margin_val:>9,.0f}"
         log.info(f"  {p.rank:>2} {p.symbol:<11} {p.strategy:<22} {p.side:<5} "
                  f"{p.entry_price:>9.2f} {p.target_price:>9.2f} "
-                 f"{p.stop_price:>9.2f} {p.qty:>4}")
-    log.info("=" * 78)
+                 f"{p.stop_price:>9.2f} {p.qty:>5} "
+                 f"{notional:>10,.0f} {margin_str}")
+        if i < MAX_CONCURRENT_TRADES:
+            total_margin_top6 += margin_val
+    log.info("-" * 100)
+    if MARGIN_PRECHECK and total_margin_top6 > 0 and available_balance > 0:
+        pct = total_margin_top6 / available_balance * 100
+        log.info(f"  if top {MAX_CONCURRENT_TRADES} all fill: total margin = "
+                 f"Rs {total_margin_top6:,.0f}  ({pct:.1f}% of balance "
+                 f"Rs {available_balance:,.0f})")
+        if pct > 95:
+            log.warning(f"  >> margin usage is high; consider lowering "
+                        f"MAX_CAPITAL_DEPLOYED_PCT or LEVERAGE")
+    log.info("=" * 100)
     return out
 
 
@@ -641,6 +717,9 @@ def main():
     log.info(f"  per-trade notional = Rs {PER_TRADE_NOTIONAL_INR:,}")
     log.info(f"  max concurrent     = {MAX_CONCURRENT_TRADES}")
     log.info(f"  product            = {PRODUCT_TYPE}")
+    log.info(f"  dynamic sizing     = {USE_DYNAMIC_SIZING}  "
+             f"(leverage {LEVERAGE:.1f}x, deploy {MAX_CAPITAL_DEPLOYED_PCT*100:.0f}%)")
+    log.info(f"  margin precheck    = {MARGIN_PRECHECK}")
     if (not DRY_RUN) and (not I_UNDERSTAND_THE_RISKS):
         log.error("DRY_RUN=False but I_UNDERSTAND_THE_RISKS=False -> aborting")
         sys.exit(2)
@@ -649,9 +728,11 @@ def main():
     client = DhanClient()
 
     # sanity: token + funds
+    available_balance = 0.0
     try:
         f = client.fundlimit()
-        log.info(f"Available balance: Rs {f.get('availabelBalance', '?')}")
+        available_balance = float(f.get("availabelBalance", 0) or 0)
+        log.info(f"Available balance: Rs {available_balance:,.2f}")
     except Exception as e:
         log.error(f"Dhan fundlimit failed — token expired? {e}")
         sys.exit(2)
@@ -661,7 +742,7 @@ def main():
     # Auto-load latest top-10 from the backtest results CSV.
     global TOP10
     TOP10 = load_top10()
-    plans   = build_todays_plans(client, sec_map)
+    plans   = build_todays_plans(client, sec_map, available_balance)
     if not plans:
         log.error("No valid trade plans for today; exiting"); return
 
