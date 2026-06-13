@@ -1,0 +1,30 @@
+# --- secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# --- large / regenerable data ---
+scrip_master.csv
+cache_intraday/
+
+# --- runtime artefacts ---
+live_trader_*.log
+trades_*.csv
+intraday_dhan_run.log
+intraday_dhan_costed_run.log
+intraday_run.log
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
