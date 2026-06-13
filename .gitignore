@@ -20,6 +20,7 @@ cache_intraday/
 # --- runtime artefacts ---
 live_trader_*.log
 trades_*.csv
+!trades_intraday_dhan.csv
 intraday_dhan_run.log
 intraday_dhan_costed_run.log
 intraday_run.log
