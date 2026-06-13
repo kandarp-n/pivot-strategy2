@@ -22,8 +22,8 @@ LIVE INTRADAY PIVOT TRADER — top-10 (stock, strategy) combos from the backtest
    1  POWERGRID    STD_R1_BOUNCE_SHORT     SHORT   std_R1   std_PP   std_R2
    2  HDFCBANK     FIB_S1_BOUNCE_LONG      LONG    fib_S1   fib_PP   fib_S2
    3  MARUTI       CAM_S3_SHORT            SHORT   cam_R3   cam_S3   cam_R4
-   4  BPCL         FIB_R1_BOUNCE_SHORT     SHORT   fib_R1   fib_PP   fib_R2
-   5  BPCL         FIB_S1_BOUNCE_LONG      LONG    fib_S1   fib_PP   fib_S2
+   4  BPCL         FIB_S1_BOUNCE_LONG      LONG    fib_S1   fib_PP   fib_S2
+   5  BPCL         FIB_R1_BOUNCE_SHORT     SHORT   fib_R1   fib_PP   fib_R2
    6  COALINDIA    CAM_L3_LONG             LONG    cam_S3   cam_R3   cam_S4
    7  BPCL         STD_R1_BOUNCE_SHORT     SHORT   std_R1   std_PP   std_R2
    8  KOTAKBANK    STD_S1_BOUNCE_LONG      LONG    std_S1   std_PP   std_S2
@@ -121,8 +121,8 @@ TOP10: list[TradePlan] = [
     TradePlan(1,  "POWERGRID", "STD_R1_BOUNCE_SHORT", "SHORT", "std_R1", "std_PP", "std_R2"),
     TradePlan(2,  "HDFCBANK",  "FIB_S1_BOUNCE_LONG",  "LONG",  "fib_S1", "fib_PP", "fib_S2"),
     TradePlan(3,  "MARUTI",    "CAM_S3_SHORT",        "SHORT", "cam_R3", "cam_S3", "cam_R4"),
-    TradePlan(4,  "BPCL",      "FIB_R1_BOUNCE_SHORT", "SHORT", "fib_R1", "fib_PP", "fib_R2"),
-    TradePlan(5,  "BPCL",      "FIB_S1_BOUNCE_LONG",  "LONG",  "fib_S1", "fib_PP", "fib_S2"),
+    TradePlan(4,  "BPCL",      "FIB_S1_BOUNCE_LONG",  "LONG",  "fib_S1", "fib_PP", "fib_S2"),
+    TradePlan(5,  "BPCL",      "FIB_R1_BOUNCE_SHORT", "SHORT", "fib_R1", "fib_PP", "fib_R2"),
     TradePlan(6,  "COALINDIA", "CAM_L3_LONG",         "LONG",  "cam_S3", "cam_R3", "cam_S4"),
     TradePlan(7,  "BPCL",      "STD_R1_BOUNCE_SHORT", "SHORT", "std_R1", "std_PP", "std_R2"),
     TradePlan(8,  "KOTAKBANK", "STD_S1_BOUNCE_LONG",  "LONG",  "std_S1", "std_PP", "std_S2"),
