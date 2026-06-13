@@ -1,0 +1,13 @@
+# Core data + HTTP
+pandas>=2.0
+numpy>=1.24
+requests>=2.31
+python-dotenv>=1.0
+
+# Parquet engine for the intraday-bar cache (cache_intraday/*.parquet)
+pyarrow>=15.0
+
+# Only used by backtest.py (the legacy daily-bar backtest with Yahoo Finance
+# fallback). Optional — backtest_intraday_dhan.py and live_trader.py do not
+# need this.
+yfinance>=1.0
